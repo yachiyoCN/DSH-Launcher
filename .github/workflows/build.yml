@@ -1,0 +1,124 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Diagnose toolchain
+        shell: pwsh
+        run: |
+          "::notice::OS=$([System.Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE"
+          $cands = @(
+            "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+            "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          )
+          foreach ($c in $cands) {
+            $exists = Test-Path $c
+            "::notice::csc $c exists=$exists"
+            if ($exists) { & $c 2>&1 | Select-Object -First 1 | ForEach-Object { "::notice::version $_" } }
+          }
+          "::notice::dotnet=$(if (Get-Command dotnet -ErrorAction SilentlyContinue) { (dotnet --version) } else { 'absent' })"
+          Get-ChildItem src, assets -File | ForEach-Object { "::notice::file $($_.Name) $($_.Length)B" }
+
+      - name: Build with system csc
+        id: build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) {
+            $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          }
+          if (-not (Test-Path $csc)) {
+            "::error title=csc missing::Neither Framework64 nor Framework csc.exe exists on this runner"
+            exit 1
+          }
+
+          $args = @(
+            '/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
+            '/win32icon:assets\whale.ico',
+            '/win32manifest:src\app.manifest',
+            '/resource:assets\whale.ico,whale.ico',
+            '/out:DSHWebLauncher.exe',
+            '/reference:System.dll',
+            '/reference:System.Drawing.dll',
+            '/reference:System.Windows.Forms.dll',
+            '/reference:System.Core.dll',
+            'src\DshWebLauncher.cs'
+          )
+          "::notice::csc=$csc"
+          $out = & $csc @args 2>&1
+          $code = $LASTEXITCODE
+          foreach ($line in $out) { Write-Host $line }
+          if ($code -ne 0) {
+            $flat = ($out | Out-String).Replace("`r", ' ').Replace("`n", ' | ')
+            if ($flat.Length -gt 900) { $flat = $flat.Substring(0, 900) }
+            "::error title=csc failed (exit $code)::$flat"
+            exit 1
+          }
+          if (-not (Test-Path DSHWebLauncher.exe)) {
+            "::error title=no output::csc exited 0 but DSHWebLauncher.exe was not produced"
+            exit 1
+          }
+          $size = (Get-Item DSHWebLauncher.exe).Length
+          "::notice::built DSHWebLauncher.exe $size bytes"
+
+      - name: Verify icon payloads are embedded
+        shell: pwsh
+        run: |
+          $out = node scripts/check-icon.mjs DSHWebLauncher.exe assets/whale.ico 2>&1
+          $code = $LASTEXITCODE
+          foreach ($line in $out) { Write-Host $line }
+          if ($code -ne 0) {
+            $flat = ($out | Out-String).Replace("`r", ' ').Replace("`n", ' | ')
+            "::error title=icon check failed::$flat"
+            exit 1
+          }
+
+      - name: Smoke test CLI
+        shell: pwsh
+        run: |
+          # GUI 瀛愮郴缁熺▼搴忎笉缁ф壙 PowerShell 鐨?stdout锛屽繀椤绘樉寮忛噸瀹氬悜鎵嶈兘鎷垮埌杈撳嚭
+          $outFile = Join-Path $PWD 'status.txt'
+          $p = Start-Process -FilePath '.\DSHWebLauncher.exe' -ArgumentList '--status' `
+               -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outFile
+          Get-Content $outFile | Write-Host
+          $text = Get-Content $outFile -Raw
+          if ($p.ExitCode -ne 0) {
+            "::error title=smoke failed::--status exited $($p.ExitCode)"
+            exit 1
+          }
+          if ($text -notmatch 'port=') {
+            "::error title=smoke failed::--status produced no config output"
+            exit 1
+          }
+          "::notice::smoke ok exit=$($p.ExitCode)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSHWebLauncher
+          path: DSHWebLauncher.exe
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DSHWebLauncher.exe
+          generate_release_notes: true
