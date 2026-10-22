@@ -1,0 +1,19 @@
+# 编译产物（由 CI / 本地编译生成，不提交）
+*.exe
+*.pdb
+*.obj
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# 图标生成的中间预览图（whale.ico 需要提交，预览图不需要）
+icon-preview-*.png
+exe-icon-check.png
+
+# 系统垃圾
+Thumbs.db
+desktop.ini
+.DS_Store

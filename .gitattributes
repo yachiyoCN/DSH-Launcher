@@ -1,0 +1,10 @@
+# 统一换行，避免 Windows / Linux 混用
+* text=auto eol=lf
+
+# 二进制资源
+*.ico binary
+*.png binary
+*.exe binary
+
+# GitHub Actions 工作流保持 LF
+.github/** text eol=lf
